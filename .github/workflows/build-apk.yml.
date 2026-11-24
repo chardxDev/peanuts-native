@@ -1,0 +1,61 @@
+name: build-apk
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: "fake = quick APK (Prepare is a placeholder). native = real build, slow, may need fixes"
+        type: choice
+        options: [fake, native]
+        default: fake
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Android SDK, NDK and CMake
+        run: |
+          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.22.1"
+          echo "sdk.dir=$ANDROID_HOME" > android/app/local.properties
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+      # Only for the real build: the on-device packer's native side (the "stage")
+      - name: Tools for the stage
+        if: inputs.engine == 'native'
+        run: sudo apt-get update && sudo apt-get install -y zsh ninja-build cmake curl
+
+      - uses: actions/setup-dotnet@v4
+        if: inputs.engine == 'native'
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build the stage (native only)
+        if: inputs.engine == 'native'
+        run: zsh peanuts/scripts/ondevice-stage.sh "$RUNNER_TEMP/nxwork" all
+
+      - name: Build the APK (fake packer)
+        if: inputs.engine == 'fake'
+        working-directory: android/app
+        run: ./gradlew -PnxApp=peanuts -PnxPackEngine=fake apk
+
+      - name: Build the APK (real packer)
+        if: inputs.engine == 'native'
+        working-directory: android/app
+        run: ./gradlew -PnxApp=peanuts -PnxPackStage="$RUNNER_TEMP/nxwork/stage" apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: peanuts-native-apk-${{ inputs.engine }}
+          path: android/app/out/*.apk
